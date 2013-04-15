@@ -6,14 +6,9 @@ tagline: ...
 {% include JB/setup %}
 
     
-## Sample Posts
+文章列表
 
-This blog contains sample posts which help stage pages and blog data.
-When you don't need the samples anymore just delete the `_posts/core-samples` folder.
 
-    $ rm -rf _posts/core-samples
-
-Here's a sample "posts list".
 
 <ul class="posts">
   {% for post in site.posts %}
