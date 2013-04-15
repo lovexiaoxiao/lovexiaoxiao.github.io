@@ -14,9 +14,9 @@ tagline: Site Tagline
 author : ruby
   name : Name Lastname
   email : lxj831@126.com
-#  github : username
-#  twitter : username
-#  feedburner : feedname
+  github : username
+  twitter : username
+  feedburner : feedname
 
 # The production_url is only used when full-domain names are needed
 # such as sitemap.txt 
