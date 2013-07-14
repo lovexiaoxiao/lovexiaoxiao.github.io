@@ -1,0 +1,466 @@
+# Oracle数据库性能优化笔记：
+
+[书籍链接](http://book.douban.com/subject/10876136/)
+
+## SQL执行分析
+在Oracle执行SQL语句时，语法分析是解释并执行SQL语句的首要过程，包括分析SQL句法、检查执行权限、生成执行计划、装载共享结构等。
+即使是软解析，但SQL的句法分析和用户执行权限检查仍然存在，因此，软解析仍然会部分消耗系统资源。这是SQL执行的必然代价。
+
+## 某著名公司SQL书写规范
+对于表名的使用：   
+1.必须大写  
+2.多表连接查询，表名按升序自然排列，不能含有多余的空格  
+3.优先使用预定义视图，而非在在线视图（inline view）或子查询  
+4.使用在线视图（inline view）或子查询时，请先提交需求  
+
+对于列名的使用：  
+1.必须小写  
+2.列的出现顺序严格按照其在表中的位置按顺序出现，不能含有多余的空格  
+
+SQL语句所使用的变量：  
+1.使用绑定变量  
+2.变量的数据类型定义需采用 %type  
+
+SQL模块化的要求：  
+1.基础模块建议在存储过程、函数中完成  
+2.基础模块群建议在包中完成  
+
+SQL性能不佳可能是由于数据增长对系统性能造成了负面影响，但同时也可能是由于表数据、索引数据的离散化导致SQL最终的I/O操作增加而造成的。  
+
+
+## 性能改善的工作流程 
+1.了解基本情况  
+2.执行系统状态检查  
+3.了解系统故障  
+4.判断常见错误配置  
+5.建立性能分析流程  
+6.建立性能调整计划  
+7.校验调整工作结果  
+
+
+## CPU使用率的判断
+一般而言，如果内核使用CPU比率（内核模式CPU的百分比，%sys）超过40%，则可能是网络通信、换页操作、进程挂起等引起的系统问题。  
+
+如果系统中经常发生大的全表扫描将可能导致严重的缓存洗刷（脏数据缓存块写入磁盘子系统的指令）和对应的I/O操作，同时全表扫描中潜在的排序操作还会消耗大量的CPU资源。  
+
+虚拟列--是Oracle11g这个版本中新增的一项功能，这个功能支持为表创建一个逻辑上存在但物理上不予以保存的列，此列称为虚拟列。虚拟列的创建会以表中存在的其他列为依据，该列的取值将在运行状态下动态获得。  
+
+## 索引维护的代价 
+在DML操作中，用户索引键维护所需的资源大致上应是针对表的DML操作的3倍。这意味着，如果你对一个带有3个索引的表进行插入操作，它的速度将是直接操作表的1/10左右。因此，对于DML操作，一个表上存在过量的索引将带来性能灾难。   
+
+## 查看索引维护带来的系统I/O压力和表的I/O压力的对比
+select name, phyrds, phywrts, readtim, writetim 
+from v$filestat a, v$datafile b 
+where a.file## = b.file## 
+order by  readtim desc  
+
+
+## 索引的类型
+1.B树索引  
+2.位图索引--主要用于OLAP系统  
+3.索引组织表  
+4.逆序索引  
+5.函数索引  
+6.哈希索引  
+7.分区索引（本地和全局索引）  
+
+对具有高可选择性的列来说，采用B树形式的索引来定位数据是较好的选择。  
+
+由于位图索引是按位存储索引值的，每个索引值会映射一个范围的ROWID,因此在更新时Oracle会锁定这个范围内的所有ROWID，造成其他一些DML语句锁申请等待，甚至发生死锁。当多用户执行更新时，其瓶颈效果会更明显。  
+
+对“简短的”表按照索引组织结构进行存储，是一种对表进行物理部署优化的具体方式。
+
+
+在进行索引设计时，可供参考的索引创建规则：  
+1. 对预计会频繁运行的SQL中的WHERE子句引用的列创建索引：  
+  1. 列值的可选择性高，则设计B树索引。  
+	2. 列的取值个数低于50个，则考虑位图索引。  
+	3. 若该表频繁更新，则禁用位图索引。  
+2. 对任何将要用于表连接的列创建索引：  
+	1. 考虑对主外键约束中的外键创建索引  
+	2. 在非主外键关系中，考虑为表连接列创建索引。  
+3. 对于会用于排序等操作（进行group by 或 order by操作）的列创建索引，可根据情况来确定，要是待排序的列有多个，可以采用复合形式的索引。  
+4. 如果数据具有唯一性，则要创建为唯一性索引。  
+
+ ## sar -u 2 200 的分析
+ (每隔2秒采集服务器CPU的使用情况)  
+ 对于Oracle系统而言，如果系统wio存在是常态，则其I/O效率令人堪忧。如果%wio超过25%,则磁盘子系统存在性能问题，可能是数据存储不平衡，或者当前有磁盘密集型的工作负载。
+
+
+## AIX异步I/O设置
+如果是AIX 5.3环境，则情况略有不同。如果数据库放在文件系统上，则对应的异步I/O需要配置三个参数： minservers, maxservers, maxreqs。其含义分别是处理器可以启动的最小异步I/O服务进程数、最大异步I/O服务进程数、异步I/O最大请求数。  
+
+在AIX5.3环境下，如果数据库准备采用裸设备部署，则没有必要进行上述部署。因为在AIX内核中已经加载了异步I/O驱动，在裸设备情况下AIX将直接使用异步I/O驱动。  
+
+如果是AIX 6.1或7。1环境。设置异步I/O服务的请求数上限。可以通过以下命令查看最大的请求数：  
+
+		ioo -o aio_maxreqs
+		aio_maxreqs = 65536
+
+
+## 数据块大小设定
+由于Oracle支持跨数据库存储行数据，因此，块的大小并不影响数据的存储可行性。
+如果一个库中要设置多种尺寸的数据库块，管理员需要先行设计对应块尺寸的数据库缓冲区，否则对应块尺寸的表空间不能成功创建。  
+在DBCA创建完数据库之后，系统默认的块尺寸得以确定。  
+
+对于DML事务繁忙的系统来说，还原表空间对应的数据文件或裸设备的写操作会很明显，因此，出于隔离I/O的想法，最好能够将还原表空间的数据文件隔离存储。  
+DML繁忙的系统，力争将还原表空间的数据文件隔离存储。（undo）  
+
+如果应用系统中并发使用临时段的用户很多，则临时表空间的盘区尺寸应设置的小一些，例如128k或者256k。如果不申明盘区大小，则系统采用默认值1M。   
+
+## I/O分离原则
+如果系统存在I/O热点和争用问题，则可以使用如下原则来进行I/O的分离：  
+1. 数据与数据、数据与索引的分离。  
+		
+		create table table_name(column list) tablespace tablespace_name;
+		alter table table_name move tablespace tablespace_name;
+2. 数据表、索引的分区化。使用分区表的做法进行。
+3. 数据的视图化。创建和使用Oracle物化视图，使数据的查询操作从表上分离出去。
+
+
+## 数据压缩
+对数据是否采用压缩，可以考虑如下几个问题：  
+1. 单表容量。如果单表容量很大，甚至达到几十GB，则考虑采用压缩方式。
+2. 如果对表的操作是数据保留为主的（如insert为主流），少有其他DML操作，那这就不会导致运行中重压缩所带来的性能问题。
+表压缩并不是在每次数据块写入时发生的，这里使用了“基于数据块的批次压缩技术”。当一个数据块为空时，插入的数据并不会被压缩，所以DML对性能没有显著影响只有当数据块即将满的时候，压缩操作才会发生，这就保证了DML语句的实时效率。同时，这种压缩方式也保证了最大的压缩可能。
+3. 如果一个表的数据基本保持静态，仅有较少的数据维护操作，而且有较多的重复数据，则这个表可能是一个不错的压缩候选表。因此，在进行数据库设计时可以充分利用这个特点，人为添加冗余列，使表可以被压缩，这样就会减少查询时的数据库的I/O访问量，提升响应速度。
+
+## 表的并行
+在表的层面，Oracle实现并行操作的最佳场景是发生针对达标的并行查询和更新时，并行操作会带来性能的提升和响应时间的降低。
+
+## 数据缓存
+将最常访问的数据尽量长时间的存储在数据缓冲中，这是我们优化内存使用的主要手段。如果一个表不太大，但这个表却很“热”，那么可以将该表放在数据缓冲的顶端，使其不被其他数据库会话置换。
+
+## 数据导入与索引维护
+出于数据导入速度的考虑，我们应该想想是否可以在导入数据后再创建索引呢？应该说这才是有效的方法。在数据装载后再创建索引，这样会避免出现索引对象在数据装载过程中的维护操作。
+另外，如果使用SQL*Loader装载数据，则在数据装载过程中SQL*Loader并不会同步维护索引。装载结束后，SQL*Loader则开始自动维护索引。
+
+## AMM和ASMM
+是使用AMM还是使用ASMM，在Oracle 11g版本中是由不同的数据库参数决定的。设置memory_target参数，则使用AMM；设置SGA_TARGET,则Oracle使用ASSM。  
+
+AMM和ASMM并不参与 log buffer，其他多缓存池、静态SGA区域等的动态分配管理。也就是说，如果设定DB_KEEP_CACHE_SIZE参数、DB_RECYCLE_CACAHE_SIZE、DB_nK_CACHE_SIZE、LOG_BUFFER参数，则设定的这部分内存结构不受AMM、ASMM管理。因此AMM、ASMM实际上能够管理的空间大小即SGA_TARGET减去上述各项后的剩余部分。  
+
+## 重做日志的瓶颈问题
+由于日志文件存在写盘效率问题（commit的等待与log file sync的统计），导致其次为了数据库的性能瓶颈。解决这类问题可以考虑如下方法；
+1. 在Oracle中调整检查点的进程。
+2. 在Oracle的归档模式下改进归档方式和优化归档进程。
+3. 在操作系统中使用RAID0+1/RAID1+0类型的存储设备。
+4. 在操作系统中使用条带化的逻辑卷（例如：##mklv -S 128K)
+5. 在操作系统中使用在磁盘存储中部的逻辑卷（例如在AIX中使用####mklv -a c）来创建存放日志的存储区域。
+
+
+## windows支持五种类型的动态卷：
+1. 简单卷
+2. 跨区卷
+3. 带区卷
+4. 镜像卷
+5. RAID-5卷  
+其中镜像卷和RAID-5卷具有容错功能。
+
+
+## 可以使用dbfsize命令查看Oracle数据块尺寸：
+
+		bash-3.2$ dbfsize sqlt.dbf
+		Database file: sqlt.dbf
+		Database file type: file system
+		Database file size: 131072 8192 byte blocks
+
+## 操作系统的I/O尺寸 
+最大操作系统I/O尺寸：一次I/O请求的逻辑上限。一般而言每个操作系统都会用不同的参数来进行设置，比如AIX系统使用LTG	设定（卷组LTG:Logical Track Group参数），而在HP-UX中的系统参数为 max_I/O_size。
+
+		ash-3.2$  lsvg rootvg
+		VOLUME GROUP:       rootvg                   VG IDENTIFIER:  00ce09e500004c000000012a61a8e07d
+		VG STATE:           active                   PP SIZE:        256 megabyte(s)
+		VG PERMISSION:      read/write               TOTAL PPs:      1092 (279552 megabytes)
+		MAX LVs:            256                      FREE PPs:       172 (44032 megabytes)
+		LVs:                14                       USED PPs:       920 (235520 megabytes)
+		OPEN LVs:           13                       QUORUM:         1 (Disabled)
+		TOTAL PVs:          2                        VG DESCRIPTORS: 3
+		STALE PVs:          0                        STALE PPs:      0
+		ACTIVE PVs:         2                        AUTO ON:        yes
+		MAX PPs per VG:     32512                                     
+		MAX PPs per PV:     1016                     MAX PVs:        32
+		LTG size (Dynamic): 1024 kilobyte(s)         AUTO SYNC:      no
+		HOT SPARE:          no                       BB POLICY:      relocatable 
+
+## ASM的粗粒度条带化
+在ASM中，数据按照1MB的条带深度在ASM磁盘组中分离数据I/O，通常，它以128k为条带深度来分离日志I/O。
+
+## 工程中的存储的典型配置
+1. 将所有的磁盘放置到一个大的条带化的磁盘组中
+2. 将归档日志放置到不同的磁盘组
+3. 重做日志使用独立磁盘
+4. 使用ASM管理磁盘
+
+## I/O测试工具--Orion
+Orion支持如下的负载测试：
+1. 小型随机I/O
+2. 大型连续读I/O
+3. 大型随机读I/O
+4. 混合负载I/O
+
+## 数据块进程的使用
+每一个用户连接都会派生一个用户的进程，无论这个数据块用户是从服务器本机还是通过网络登录Oracle的。而且每一个进程都会使用对应的资源。    
+查看用户最大进程连接数：   
+	
+		##lsattr -El sys0 | grep maxuproc 
+
+## 设置数据块校验和检查
+Oracle使用参数 DB_BLOCK_CHECK_SUM 来控制是否对磁盘读取的数据块进行校验。设置为TRUE则可计算数据块或者日志块的校验和。块校验操作可以用来检测发生的磁盘错误、存储系统错误等I/O错误。  
+在设置数据块校验参数后，Oracle在将数据写入磁盘数据块前会先计算这个数据块的校验和，并将结果记录在数据块中。在下一次对这个数据块进行磁盘读取操作前，Oracle会再次计算这个数据块的校验和，并与之前的结果进行对比。如果对比出现差异，Oracle会认为发生了介质错误，并随之提示 ORA-1578 错误。
+另外，不论 DB_BLOCK_CHECKSUM 是否为 TRUE, Oracle都将计算SYSTEM表空间的校验和。
+
+## 查询数据库的默认表空间  
+
+		select PROPERTY_NAME,PROPERTY_VALUE
+		from database_properties
+		where property_name='DEFAULT_TEMP_TABLESPACE';
+
+		select PROPERTY_NAME,PROPERTY_VALUE
+		from database_properties
+		where property_name like 'DEFAULT%TABLESPACE';
+
+## 设置空间错误延时
+在数据块发生了空间分配错误的情况下，数据块语句执行失败并返回错误信息。在Oracle10g/11g中，添加了一个新参数RESUMABLE_TIMEOUT，用于使事务暂停一段时间，然后继续执行。 
+在这种情况下，受到影响的操作将会暂停下来，而不是返回数据库错误消息，进程也无须重启。
+默认设置为：  
+
+		SQL> show parameter RESUMABLE_TIMEOUT
+		
+		NAME                                 TYPE        VALUE
+		------------------------------------ ----------- ------------------------------
+		resumable_timeout                    integer     0
+
+可以进行设置：(设置失败恢复延时为60秒)  
+`sql>alter system set RESUMABLE_TIMEOUT = 60 scope = both;`
+
+
+## 数据库闪回
+
+		SQL> show parameter db_flashback
+		NAME                                 TYPE        VALUE
+		------------------------------------ ----------- ------------------------------
+		db_flashback_retention_target        integer     720
+
+720只是一个目标，并不能绝对的保证数据库可以闪回到1440分钟内的某一个时刻。当闪回恢复区的占用空间不足以保存归档日志文件和其他备份文件是，闪回恢复区将自动删除闪回日志文件，以腾出必要的空间。   
+详细的信息可以通过视图V$FLASHBACK_DATABASE_LOG来查看，以了解当前可以闪回的最早时间。 
+另外在Data Guard架构下，主/备用数据块的FLASHBACK_RETENTION_TIME参数设置要保持一致。 
+
+## 表加密
+需要先创建wallet。  
+Oracle支持的加密算法： 
+1. AES256
+2. AES192
+3. AES128
+4. 3DES168
+如果在创建表是不指定加密算法，则默认使用AES192。如果表中加密的列超过两个，则每一个都要指定同样的加密算法。     
+
+## 分区
+分区可以在一定程度上对系统性能予以优化，因为分区优化、并行优化往往是一体的。采用并行的方法，实际上是对系统资源使用权限的掠夺。同时，对于OLTP系统来说，大多数的数据操作是围绕着某些业务数据进行“定位”型的查询和更新的。即使是一个大表，此类操作也可以在索引技术的帮助下高效完成。因为其扫描可以通过索引来实现数据的直接定位。分区优势在于“分而治之”，而并不是“数据定位“方面（索引是这方面的主要贡献者）。所以，对于OLTP类型的系统来说，分区只有在进行大的对象全表扫描类型的操作时才有性能上的作用。而这是通过并行操作和分区表的分区消除（仅扫描部分分区）来实现的。
+
+## 表分析工具
+在工程中定期对表、索引进行统计分析是有必要的，否则有偏差的统计将会使CBO选择较不好的执行计划。  
+统计分析可以使用两种工具，analyze命令和dbms_stats工具包。  
+
+
+## 优化器设置
+
+		SQL> show parameter optimizer
+		NAME                                 TYPE        VALUE
+		------------------------------------ ----------- ------------------------------
+		optimizer_dynamic_sampling           integer     2
+		optimizer_features_enable            string      10.2.0.4
+		optimizer_index_caching              integer     0
+		optimizer_index_cost_adj             integer     100
+		optimizer_mode                       string      ALL_ROWS
+		optimizer_secure_view_merging        boolean     TRUE
+
+optimizer_index_caching 表示索引被缓存化的百分比，默认为0，其取值可以为0～100。对CBO优化器而言，0则意味着只有0%的索引数据可以在SGA中获得，即所有对索引的访问都将导致物理I/O。   
+optimizer_index_cost_adj 该参数表述的基本含义是Oracle执行多块I/O操作（比如全表扫描）的代价和执行单块I/O的相对比例。该参数的取值范围是0～1000，默认为100。    
+如果想了解Oracle单块、多块读的比例状态，可以通过一个Oracle统计来进行评估。  
+
+		SQL> select event,average_wait
+		  2  from v$system_event where event like 'db file s%'; 
+		EVENT                                                            AVERAGE_WAIT
+		---------------------------------------------------------------- ------------
+		db file sequential read                                                  0.12
+		db file scattered read                                                   0.11
+		db file single write                                                     0.08
+
+我们可以用一个公式 sequential reads/scattered reads 来辅助设定 optimizer_index_cost_adj 参数值（来自metalink建议）。例如上例中的 12/11=110%   
+`sql> alter system set optimizer_index_cost_adj = 110 scope = both;`
+
+
+## db block gets 和 consistent gets 
+db block gets--当前请求状态下的数据缓缓存块数，大多数情况下都可以看成是数据更新类（DML)操作中的数据块读取（get）部分，在其中所看到的数据可能不具有时间点的一致性。    
+consistent gets--在一致性读状态下调用的缓存块数，大多数情况下都可以看成是数据查询类（DSL:select）操作中的读取部分，表示在其中所看到的数据具有时间点的一致性。    
+
+## 定期整理表空间 
+`SQL> alter tablespace users coalesce;`  
+如果有可能，可定期执行（一年或半年）数据的导入导出操作（exp/expdp，imp/impdp），重新初始化表的存储环境。   
+
+## 索引的扫描方式 
+1. 索引唯一性扫描--INDEX UNIQUE SCAN
+2. 索引范围性扫描--INDEX RANGE SCAN
+3. 全索引扫描--INDEX FULL SCAN
+4. 全索引快速扫描--INDEX FAST FULL SCAN 
+5. 索引跳跃扫描--INDEX SKIP SCAN  
+全索引扫描的结果是有序的。全索引快速扫描的结果是无序的。   
+
+当使用组合索引的非第一列作为查询条件时，可能会使用索引跳跃扫描。  
+
+		emp_idx(empno,empname);  
+		select empno,empname,sal from emp where empname='SCOTT';  
+
+另外，索引的跳跃扫描受到Oracle内部参数 "_optimizer_skip_scan_enabled" 的限制。如果为false则关闭索引跳跃扫描。如果true则开启。  
+
+关闭索引跳跃扫描  
+
+		SQL>alter system set "_optimizer_skip_scan_enabled" = false scope=both;
+		SQL>alter system set "_optimizer_skip_scan_enabled" = true scope=both;
+
+
+相对于表，如果索引在尺寸上很小，那么全索引快速扫描、全索引扫描就可以使SQL性能得到提升。但如果索引包含了大部分的数据列，索引的尺寸可能会大于表，这时，效率是提升还是下降就不确定了。
+
+## 索引的选择性
+Oracle的USER_INDEXES中的Distinct_Keys列统计的是索引数据“不重样”的行数。   
+Oracle优化器在进行索引路径的选择中，会引用这个索引的可选择性，以帮助判断使用此索引的效率情况。索引的可选择性越高，则依赖索引获得的行数据也就越少。反之，如果通过索引返回的数据非常多，那么也许还不如没有这个索引。  
+
+## 索引的簇化率
+簇化率用来表述索引数据的存储有序程度，与它所对应的是表数据的有序性度量。如果索引数据的有序性排列于表数据的有序性排列相近，则对应索引数据的表扫描I/O成本就会较低。反之，如果索引数据的排列于表数据的排列具有很大的差异，则相应的表扫描的I/O成本也就会较高。    
+簇化率的最低值是表的数据块数量，最高值为数据的行数。  
+
+		SQL> select C.INDEX_NAME,C.DISTINCT_KEYS,C.NUM_ROWS,C.CLUSTERING_FACTOR
+		  2  from user_indexes c
+		  3  where c.TABLE_NAME='PUB_GOODS';
+		 INDEX_NAME                     DISTINCT_KEYS   NUM_ROWS CLUSTERING_FACTOR
+		------------------------------ ------------- ---------- -----------------
+		PUB_GOODS_PK                           36527      36527             23105
+		PUB_GOODS_VARID_IDX                      509      34435             23151
+		PUB_GOODS_GOODSNO_IDX                    827       3980              1963
+		PUB_GOODS_PINYIN_IDX                   18233      36153             33486
+		PUB_GOODS_GOODSNAME_IDX                21447      36527             33864
+		PUB_GOODS_FACTORY_IDX                   3316      21143             14673
+
+
+		SQL> select D.TABLE_NAME,D.BLOCKS,D.NUM_ROWS
+		  2  from user_tables d
+		  3  where d.TABLE_NAME='PUB_GOODS';
+		 
+		TABLE_NAME                         BLOCKS   NUM_ROWS
+		------------------------------ ---------- ----------
+		PUB_GOODS                            1320      36698
+ 
+索引的簇化率越高，则通过索引读取表数据时，具有更好的性能。  
+
+## 索引的二元高度 
+传统的索引是采用B树结构，索引访问也是通过对树的遍历来实现的。因此索引的二元高度会对索引访问的I/O数量起到关键作用。  
+如果索引的二元高度是3，那么每次对数据进行访问是如果通过索引路径执行，则每返回一行数据，都会有三个前置的索引块（根节点、枝节点、叶节点）和一个来自表的块被读取。因此，如果索引的二元高度很大，则数据提取操作所要求的I/O总量也会随之增多。  
+
+		select a.INDEX_NAME,a.TABLE_NAME,a.TABLE_OWNER
+		,a.blevel,a.LEAF_BLOCKS,a.DISTINCT_KEYS,a.AVG_LEAF_BLOCKS_PER_KEY
+ 		from user_indexes a
+
+一般来说，索引列中的空值越多则表明其二元高度越高。所以我们在设计索引时最好能够选择那些非空的列。
+
+## 直方图的使用
+默认情况下，表并不会进行直方图统计。  
+如果有了直方图，Oracle优化器将可以根据数据的分布状态进行更加精准的优化，从而帮助选择最优化的执行计划。  
+在一些极端情况下，例如表中数据严重倾斜（如果一个人员表，男性占1行，女性占9999行），优化器可以根据直方图的统计，来确定是选择索引扫描还是全表扫描（如果查询女性，则全表扫描更适合）。
+因此，直方图的最主要贡献是在面对具有不均衡数据情况下的执行计划再细化、优化。
+
+		BEGIN
+		        DBMS_stats.gather_table_stats(cascade => TRUE,degree => 2,estimate_percent => 100
+		        ,force => TRUE,ownname =>USER,tabname => 'T_XFF');
+		END;
+		/
+		
+		--在gather_table_stats方法中，默认的method_opt值为：FOR ALL COLUMNS SIZE AUTO，所以也是会收集直方图的统计信息（和oracle版本相关）
+		
+		
+		BEGIN
+		        DBMS_stats.gather_table_stats(cascade => TRUE,degree => 2
+		        ,estimate_percent => 100,force => TRUE,ownname => USER,tabname => 'T_XFF',method_opt => 'FOR ALL COLUMNS SIZE 1');
+		END;
+		/
+		--删除直方图，设置method_opt：FOR ALL COLUMNS SIZE 1即可
+
+## 避免索引的不作为
+普通索引并不会索引null值。位图索引除外。  
+非等式运算无法走索引。  
+
+		create index indx_7 on pub_goods(retailgrade);
+		select * from pub_goods where retailgrade is null ;
+		并不会走索引，而会走全表扫描。  
+		
+		create index indx_8 on pub_goods(retailgrade,-1);
+		select * from pub_goods where retailgrade is null ;
+		则会走索引indx_8，然后做一个filter reatailgread is null
+
+## 虚拟索引 
+所谓虚拟索引，也就是当创建时，Oracle仅在其系统表中记载这个索引的存在，但物理上并不为其创建对应的段，不消耗任何存储资源。这种功能对于一些大表的索引测试来说，既可以用于确定索引的有效性，又没有真正的索引生成与存储代价。  
+
+		sql>create index idx_emp_8 on emp(deptno) nosegment;
+		sql>alter  session set "_use_nosegment_indexes"=true;
+		sql>explain plan for select count(*) from emp where deptno=10;
+		sql>select * from table(dbms_xplan.display());
+
+## 压缩索引 
+压缩索引带来的益处是索引叶节点会占用更少的索引块，使SQL在索引扫描部分产生更少的I/O成本，节省数据缓存，尤其是对于索引范围的扫描来说，其I/O代价会更低。  
+` sql> create index idx_emp_4 on emp(empno,sal) compress 2; `  
+
+## 不可视索引  
+在索引的创建过程中，我们可以创建“不可视”索引。所谓的不可视索引，是因为该索引对优化器不可视，但却仍然会被数据库自动维护(发生DML操作时,索引会被自动维护)。  
+
+		sql>show parameter OPTIMIZER_USE_INVISIBLE_INDEXES 
+		NAME  							TYPE  				VALUE
+		---------------------------------------------------------
+		optimizer_use_invisible_indexes   boolean           false
+		
+		create index idx_emp_4 on emp(empno,sal) invisible;
+		
+		alter session set OPTIMIZER_USE_INVISIBLE_INDEXES = true;
+
+调整索引的不可视属性：
+
+	sql> alter index idx_emp_4 visible;
+	
+	sql> alter index idx_emp_4 invisible;
+
+## 索引的可用状态
+`sql> alter index idx_emp_4 unusable;`
+
+如果不可用的索引，想要变为可用，必须rebuild。  
+
+`sql> alter index idx_emp_4 rebuild; `
+
+## 监控索引的使用
+打开索引监视：   
+` sql> alter index idx_emp_4 monitoring usage;  `    
+关闭索引监视： 
+` sql> alter index idx_emp_4 nomonitoring usage; `  
+
+查看索引使用情况：  
+` select * from v$object_usage;   `
+
+## 分析存储I/O问题   
+Oracle提供了一系列视图来协助分析I/O问题。  
+- V$SQLAREA
+- V$FILESTAT
+- V$IOSTAT_CONSUMER_GROUP
+- V$IOSTAT_FILE
+- V$IOSTAT_FUNCTION
+
+换页操作在UNIX中是必须考虑的问题。在Solaris系统上可以使用文件 /etc/system来配置共享内存和信号令，在AIX系统上使用vmo配置虚拟内存策略，在Linux中则用 /etc/sysctl.conf文件来定义Linux中内存段的分配和使用策略。  
+
+` ping -l 1024 61.139.2.69  `    
+ping 发送1024字节的包  
+
+## 等待事件统计
+对等待时间进行分类的原因是，在同一个类别中的等待事件，往往会有一种共同的解决方法。例如，当出现缓存块等待时，往往也就意味着硬盘上存在着数据热点。  
+
+## 行链的统计 
+`  sql> select * from v$sysstat where name = 'table fetch continued row';  `    
+
+查看表是否有行链接：  
+`  sql> select  table_name,num_rows,chain_cnt from dba_tables where owner='USER1';  `
