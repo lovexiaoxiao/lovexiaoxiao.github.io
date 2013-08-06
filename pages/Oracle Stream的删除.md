@@ -1,3 +1,16 @@
+
+
+
+
+
+---
+layout: page
+title: "Oracle Stream"
+description: ""
+---
+{% include JB/setup %}
+
+
 # Oracle Stream的删除
 
 之前公司由于某种需要配置了Stream，后来由于业务调整又不需要了。准备删除掉。
@@ -34,13 +47,3 @@
 
 感觉Stream的bug还确实真不少，在使用过程中经常遇到cpu占用很高，然后删除也遇到不少问题。
 最后要感谢老杨（yangtingkun）的blog，真的就是百科全书啊，好多问题都能在上面找到解决方法。
-
-
-
-
----
-layout: page
-title: "Oracle Stream   "
-description: ""
----
-{% include JB/setup %}
